@@ -19,22 +19,16 @@ export interface AuthProvider {
 
   /**
    * Génère les headers d'authentification pour une requête OVH
-   * @param method - Méthode HTTP (GET, POST, PUT, DELETE)
-   * @param url - URL complète de la requête
-   * @param body - Corps de la requête (optionnel)
-   * @returns Headers d'authentification
    */
   getHeaders(method: string, url: string, body?: string): Promise<AuthHeaders>;
 
   /**
    * Vérifie si le provider est correctement configuré
-   * @returns true si le provider est prêt à être utilisé
    */
   isConfigured(): boolean;
 
   /**
    * Invalide le cache d'authentification (si applicable)
-   * Utile pour forcer un refresh après une erreur 401
    */
   invalidateCache?(): void;
 }

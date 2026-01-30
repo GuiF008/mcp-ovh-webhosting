@@ -6,7 +6,8 @@ Serveur MCP (Model Context Protocol) pour piloter les services OVHcloud Web Host
 
 - **8 tools read-only** pour consulter vos services Web Hosting
 - **6 tools write** (désactivés par défaut) pour gérer vos services
-- **2 modes d'authentification** : OAuth2 Service Account ou AK/AS/CK
+- **2 modes de transport** : stdio (Cursor, Claude Desktop) ou HTTP (SHAI)
+- **3 modes d'authentification** : Bearer passthrough, OAuth2 Service Account, AK/AS/CK
 - **Gestion des erreurs** avec mapping vers codes MCP standard
 - **Rate limiting** côté client (token bucket)
 - **Retries automatiques** avec backoff exponentiel
@@ -17,7 +18,7 @@ Serveur MCP (Model Context Protocol) pour piloter les services OVHcloud Web Host
 
 - Node.js >= 18.0.0
 - Un compte OVHcloud avec au moins un service Web Hosting
-- Credentials API OVH (voir sections Configuration ci-dessous)
+- Credentials API OVH (selon le mode d'authentification choisi)
 
 ## Installation
 
@@ -36,56 +37,118 @@ cp env.example .env
 npm run build
 ```
 
-## Configuration
+## Modes de Transport
 
-### Mode A - OAuth2 Service Account (recommandé)
+### Mode stdio (défaut)
 
-Ce mode est recommandé pour les automatisations internes et l'usage single-tenant.
+Pour les clients MCP locaux comme Cursor ou Claude Desktop.
 
-#### 1. Créer un Service Account OVH
+```bash
+# Démarrer en mode stdio
+npm start
+# ou
+npm run dev
+```
 
-1. Connectez-vous à votre [Console OVHcloud](https://www.ovh.com/manager/)
-2. Allez dans **Mon compte** → **Gestion des comptes** → **Comptes de service**
-3. Cliquez sur **Créer un compte de service**
-4. Notez le `Client ID` et le `Client Secret` générés
+### Mode HTTP (pour SHAI)
 
-#### 2. Créer une Policy IAM
+Pour les clients HTTP comme SHAI. Expose un endpoint `/mcp` avec SSE.
 
-Créez une policy IAM pour autoriser l'accès aux endpoints Web Hosting :
+```bash
+# Démarrer en mode HTTP
+npm run start:http
+# ou
+MCP_TRANSPORT=http npm start
+# ou
+MCP_TRANSPORT=http MCP_HTTP_PORT=8080 npm run dev
+```
+
+Le serveur affiche :
+```
+MCP Server is running on http://0.0.0.0:8080/mcp
+```
+
+## Configuration avec SHAI
+
+### 1. Démarrer le serveur MCP sur votre SDEV
+
+```bash
+cd mcp-ovh-webhosting
+MCP_TRANSPORT=http MCP_HTTP_PORT=<VOTRE_PORT_SDEV> npm run start:http
+```
+
+Remplacez `<VOTRE_PORT_SDEV>` par un port dans la plage autorisée de votre SDEV :
+```bash
+cat /etc/ovh.conf.d/sdev.conf | grep "SDEV_PORT_"
+```
+
+### 2. Configurer l'agent SHAI
+
+Créez le fichier `~/.config/shai/agents/ovh_webhosting.config` :
 
 ```json
 {
-  "name": "webhosting-read",
-  "description": "Accès lecture aux services Web Hosting",
-  "permissions": {
-    "allow": [
-      {
-        "action": "webHosting:apiovh:get"
-      }
-    ]
+  "name": "ovh_webhosting",
+  "description": "Agent pour piloter OVHcloud Web Hosting",
+  "llm_provider": {
+    "provider": "ovhcloud",
+    "env_vars": {
+      "OVH_API_KEY": "votre_AI_endpoints_token"
+    },
+    "model": "Qwen3-Coder-30B-A3B-Instruct",
+    "tool_method": "FunctionCall"
   },
-  "resources": [
-    {
-      "urn": "urn:v1:eu:resource:webHosting:*"
+  "tools": {
+    "builtin": ["*"],
+    "builtin_excluded": [],
+    "mcp": {
+      "ovh": {
+        "config": {
+          "type": "http",
+          "url": "http://gw2sdev-docker.ovh.net:<VOTRE_PORT_SDEV>/mcp",
+          "bearer_token": "votre_token_api_ovh"
+        },
+        "enabled_tools": ["*"],
+        "excluded_tools": []
+      }
     }
-  ]
+  },
+  "system_prompt": "{{CODER_BASE}}",
+  "max_tokens": 1000000,
+  "temperature": 0.0
 }
 ```
 
-Pour les tools d'écriture, ajoutez :
-```json
-{
-  "action": "webHosting:apiovh:create"
-},
-{
-  "action": "webHosting:apiovh:update"
-},
-{
-  "action": "webHosting:apiovh:delete"
-}
+### 3. Lancer SHAI
+
+```bash
+shai agent ovh_webhosting
 ```
 
-#### 3. Configurer les variables d'environnement
+Vous verrez les tools MCP disponibles :
+```
+░ MCP 'ovh' connected (authenticated)
+░ mcp(ovh): ovh.webhosting.listServices, ovh.webhosting.getService, ...
+```
+
+## Modes d'authentification OVH
+
+### Mode Bearer (passthrough) - Recommandé pour SHAI
+
+Le token est passé par le client MCP (SHAI) et transmis tel quel à l'API OVH.
+
+```bash
+# Configuration minimale pour mode HTTP + Bearer
+MCP_TRANSPORT=http
+OVH_AUTH_MODE=bearer  # Défaut en mode HTTP
+OVH_API_REGION=eu
+```
+
+Le `bearer_token` configuré dans SHAI est automatiquement utilisé pour authentifier les appels à l'API OVH.
+
+### Mode OAuth2 Service Account
+
+Pour les automatisations internes sans SHAI.
 
 ```bash
 OVH_AUTH_MODE=oauth2
@@ -95,45 +158,36 @@ OVH_OAUTH_CLIENT_SECRET=votre-client-secret
 OVH_OAUTH_SCOPE=all
 ```
 
-### Mode B - AK/AS/CK (Application Key / Secret / Consumer Key)
+#### Créer un Service Account
 
-Ce mode est utile pour la délégation de droits à des clients finaux (multi-tenant).
+1. Connectez-vous à la [Console OVHcloud](https://www.ovh.com/manager/)
+2. **Mon compte** → **Gestion des comptes** → **Comptes de service**
+3. **Créer un compte de service**
+4. Notez le `Client ID` et `Client Secret`
 
-#### 1. Créer une Application OVH
+#### Créer une Policy IAM
 
-1. Allez sur [https://eu.api.ovh.com/createApp/](https://eu.api.ovh.com/createApp/)
-2. Remplissez le formulaire pour créer une application
-3. Notez l'`Application Key` et l'`Application Secret`
-
-#### 2. Obtenir un Consumer Key
-
-```bash
-curl -X POST https://eu.api.ovh.com/1.0/auth/credential \
-  -H "X-Ovh-Application: VOTRE_APP_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "accessRules": [
-      { "method": "GET", "path": "/hosting/web/*" },
-      { "method": "POST", "path": "/hosting/web/*" },
-      { "method": "PUT", "path": "/hosting/web/*" },
-      { "method": "DELETE", "path": "/hosting/web/*" }
-    ],
-    "redirection": "https://votre-site.com/callback"
-  }'
-```
-
-Réponse :
 ```json
 {
-  "validationUrl": "https://eu.api.ovh.com/auth/?credentialToken=xxx",
-  "consumerKey": "yyy",
-  "state": "zzz"
+  "name": "webhosting-full-access",
+  "description": "Accès complet aux services Web Hosting",
+  "permissions": {
+    "allow": [
+      { "action": "webHosting:apiovh:get" },
+      { "action": "webHosting:apiovh:create" },
+      { "action": "webHosting:apiovh:update" },
+      { "action": "webHosting:apiovh:delete" }
+    ]
+  },
+  "resources": [
+    { "urn": "urn:v1:eu:resource:webHosting:*" }
+  ]
 }
 ```
 
-3. Visitez la `validationUrl` pour valider le Consumer Key
+### Mode AK/AS/CK
 
-#### 3. Configurer les variables d'environnement
+Pour la délégation de droits ou l'usage avec des applications existantes.
 
 ```bash
 OVH_AUTH_MODE=akasck
@@ -143,21 +197,11 @@ OVH_APP_SECRET=votre-application-secret
 OVH_CONSUMER_KEY=votre-consumer-key
 ```
 
-## Utilisation
+## Configuration dans Cursor / Claude Desktop
 
-### Démarrer le serveur MCP
+Pour les clients MCP locaux, utilisez le mode stdio :
 
-```bash
-# Mode production
-npm start
-
-# Mode développement
-npm run dev
-```
-
-### Configuration dans Cursor
-
-Ajoutez dans votre configuration MCP (`~/.cursor/mcp.json` ou settings) :
+### Cursor (`~/.cursor/mcp.json`)
 
 ```json
 {
@@ -176,9 +220,7 @@ Ajoutez dans votre configuration MCP (`~/.cursor/mcp.json` ou settings) :
 }
 ```
 
-### Configuration dans Claude Desktop
-
-Ajoutez dans `~/Library/Application Support/Claude/claude_desktop_config.json` :
+### Claude Desktop (`~/Library/Application Support/Claude/claude_desktop_config.json`)
 
 ```json
 {
@@ -223,46 +265,22 @@ Ajoutez dans `~/Library/Application Support/Claude/claude_desktop_config.json` :
 | `ovh.webhosting.restoreDatabaseDump` | **[DESTRUCTIF]** Restaure un dump | `POST /hosting/web/{serviceName}/database/{name}/dump/{id}/restore` |
 | `ovh.webhosting.installModule` | Installe un module (WordPress, etc.) | `POST /hosting/web/{serviceName}/module` |
 
-## Exemples d'utilisation
-
-### Lister les services
-
-```
-Appel: ovh.webhosting.listServices
-Input: {}
-```
-
-### Obtenir les détails d'un service
-
-```
-Appel: ovh.webhosting.getService
-Input: { "serviceName": "monsite.ovh" }
-```
-
-### Lister les bases de données
-
-```
-Appel: ovh.webhosting.listDatabases
-Input: { "serviceName": "monsite.ovh", "mode": "classic" }
-```
-
-### Créer une base de données (write)
-
-```
-Appel: ovh.webhosting.createDatabase
-Input: {
-  "serviceName": "monsite.ovh",
-  "capacity": "local",
-  "type": "mysql",
-  "user": "mydbuser"
-}
-```
-
 ## Variables d'environnement
+
+### Transport MCP
 
 | Variable | Description | Défaut |
 |----------|-------------|--------|
-| `OVH_AUTH_MODE` | Mode d'auth: `oauth2` ou `akasck` | `oauth2` |
+| `MCP_TRANSPORT` | Mode de transport: `stdio` ou `http` | `stdio` |
+| `MCP_HTTP_PORT` | Port HTTP (mode http) | `8080` |
+| `MCP_HTTP_PATH` | Chemin de l'endpoint MCP | `/mcp` |
+| `MCP_HTTP_HOST` | Host HTTP | `0.0.0.0` |
+
+### Authentification OVH
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
+| `OVH_AUTH_MODE` | Mode d'auth: `bearer`, `oauth2`, `akasck` | `bearer` (http) / `oauth2` (stdio) |
 | `OVH_API_REGION` | Région API: `eu` ou `ca` | `eu` |
 | `OVH_OAUTH_CLIENT_ID` | Client ID OAuth2 (mode oauth2) | - |
 | `OVH_OAUTH_CLIENT_SECRET` | Client Secret OAuth2 (mode oauth2) | - |
@@ -270,10 +288,31 @@ Input: {
 | `OVH_APP_KEY` | Application Key (mode akasck) | - |
 | `OVH_APP_SECRET` | Application Secret (mode akasck) | - |
 | `OVH_CONSUMER_KEY` | Consumer Key (mode akasck) | - |
+
+### Configuration HTTP OVH
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
 | `OVH_HTTP_TIMEOUT_MS` | Timeout HTTP en ms | `30000` |
 | `OVH_MAX_RETRIES` | Nombre max de retries | `3` |
+
+### Features
+
+| Variable | Description | Défaut |
+|----------|-------------|--------|
 | `ENABLE_WRITE_TOOLS` | Activer les tools d'écriture | `false` |
 | `LOG_LEVEL` | Niveau de log | `info` |
+
+## Endpoints HTTP
+
+En mode HTTP, le serveur expose :
+
+| Endpoint | Méthode | Description |
+|----------|---------|-------------|
+| `/mcp` | GET | SSE endpoint pour connexion MCP |
+| `/mcp` | POST | Messages MCP |
+| `/health` | GET | Health check |
+| `/info` | GET | Informations sur le serveur et les tools |
 
 ## Développement
 
@@ -289,6 +328,9 @@ npm run lint
 
 # Formatage
 npm run format
+
+# Build
+npm run build
 ```
 
 ## Points à valider
@@ -300,14 +342,6 @@ Certains endpoints ou paramètres nécessitent validation dans la console OVH :
 3. **Actions IAM exactes** : La liste complète des actions IAM pour les writes est à déterminer.
 4. **Rate limits OVH** : Non documentés, à déterminer empiriquement.
 
-## Extension multi-tenant (futur)
-
-Pour supporter plusieurs comptes OVH :
-
-1. Stocker les credentials par tenant (KMS/Secret Manager)
-2. Implémenter un middleware de routing tenant → auth provider
-3. Utiliser le flow de délégation OAuth2 ou CK pour onboarder des clients
-
 ## Licence
 
 MIT
@@ -318,5 +352,4 @@ MIT
 - [Guide Service Accounts OVH](https://help.ovhcloud.com/csm/en-api-service-account-connection)
 - [Guide API OVH (AK/AS/CK)](https://help.ovhcloud.com/csm/fr-api-getting-started-ovhcloud-api)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
-
-
+- [SHAI Documentation](https://stash.ovh.net/)

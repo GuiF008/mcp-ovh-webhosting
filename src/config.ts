@@ -1,6 +1,10 @@
 /**
  * Configuration du serveur MCP OVHcloud Web Hosting
  * Charge et valide les variables d'environnement au démarrage
+ * 
+ * Supporte deux modes de transport :
+ * - stdio : pour les clients MCP locaux (Cursor, Claude Desktop)
+ * - http : pour SHAI et autres clients HTTP (expose /mcp endpoint)
  */
 
 import { z } from 'zod';
@@ -23,8 +27,16 @@ const AkAsCkConfigSchema = z.object({
 // Schéma principal de configuration
 const ConfigSchema = z
   .object({
-    // Mode d'authentification
-    authMode: z.enum(['oauth2', 'akasck']).default('oauth2'),
+    // Mode de transport MCP : stdio ou http
+    transport: z.enum(['stdio', 'http']).default('stdio'),
+
+    // Configuration HTTP (pour mode http)
+    httpPort: z.coerce.number().int().min(1).max(65535).default(8080),
+    httpPath: z.string().default('/mcp'),
+    httpHost: z.string().default('0.0.0.0'),
+
+    // Mode d'authentification OVH : oauth2, akasck, ou bearer (passthrough depuis SHAI)
+    authMode: z.enum(['oauth2', 'akasck', 'bearer']).default('bearer'),
 
     // Région API
     apiRegion: z.enum(['eu', 'ca']).default('eu'),
@@ -32,7 +44,7 @@ const ConfigSchema = z
     // URL de base API (optionnel, auto-détecté)
     apiBaseUrl: z.string().url().optional(),
 
-    // Configuration HTTP
+    // Configuration client HTTP OVH
     httpTimeoutMs: z.coerce.number().int().positive().default(30000),
     maxRetries: z.coerce.number().int().min(0).max(10).default(3),
 
@@ -60,6 +72,7 @@ const ConfigSchema = z
       if (data.authMode === 'akasck') {
         return data.akasck !== undefined;
       }
+      // Mode bearer : pas de config requise, le token vient de la requête HTTP
       return true;
     },
     {
@@ -73,15 +86,32 @@ export type Config = z.infer<typeof ConfigSchema>;
  * Charge la configuration depuis les variables d'environnement
  */
 export function loadConfig(): Config {
-  const authMode = process.env.OVH_AUTH_MODE || 'oauth2';
+  // Détecter le mode transport
+  const transport = process.env.MCP_TRANSPORT || 'stdio';
+  
+  // En mode HTTP, le mode d'auth par défaut est "bearer" (passthrough depuis SHAI)
+  // En mode stdio, le mode d'auth par défaut est "oauth2"
+  const defaultAuthMode = transport === 'http' ? 'bearer' : 'oauth2';
+  const authMode = process.env.OVH_AUTH_MODE || defaultAuthMode;
 
   // Préparer l'objet de configuration brut
   const rawConfig: Record<string, unknown> = {
+    // Transport MCP
+    transport,
+    httpPort: process.env.MCP_HTTP_PORT,
+    httpPath: process.env.MCP_HTTP_PATH,
+    httpHost: process.env.MCP_HTTP_HOST,
+    
+    // Auth OVH
     authMode,
     apiRegion: process.env.OVH_API_REGION,
     apiBaseUrl: process.env.OVH_API_BASE_URL,
+    
+    // Client HTTP
     httpTimeoutMs: process.env.OVH_HTTP_TIMEOUT_MS,
     maxRetries: process.env.OVH_MAX_RETRIES,
+    
+    // Features
     enableWriteTools: process.env.ENABLE_WRITE_TOOLS,
     logLevel: process.env.LOG_LEVEL,
   };
@@ -105,6 +135,8 @@ export function loadConfig(): Config {
     };
   }
 
+  // Mode bearer : pas de config requise, le token vient de la requête HTTP
+
   // Valider et parser la configuration
   const result = ConfigSchema.safeParse(rawConfig);
 
@@ -125,13 +157,14 @@ export function getApiBaseUrl(config: Config): string {
   }
 
   // URLs par défaut selon la région et le mode auth
-  const isOAuth2 = config.authMode === 'oauth2';
+  // bearer et oauth2 utilisent l'API v1/v2, akasck utilise 1.0
+  const useNewApi = config.authMode === 'oauth2' || config.authMode === 'bearer';
 
   if (config.apiRegion === 'eu') {
-    return isOAuth2 ? 'https://eu.api.ovh.com/v1' : 'https://eu.api.ovh.com/1.0';
+    return useNewApi ? 'https://eu.api.ovh.com/v1' : 'https://eu.api.ovh.com/1.0';
   }
 
-  return isOAuth2 ? 'https://ca.api.ovh.com/v1' : 'https://ca.api.ovh.com/1.0';
+  return useNewApi ? 'https://ca.api.ovh.com/v1' : 'https://ca.api.ovh.com/1.0';
 }
 
 /**

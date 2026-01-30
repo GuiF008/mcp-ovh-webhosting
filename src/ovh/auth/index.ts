@@ -13,10 +13,19 @@ export {
   type CredentialRequest,
   type CredentialResponse,
 } from './akAsCkSignature.js';
+export {
+  BearerPassthroughProvider,
+  withBearerToken,
+  withBearerTokenAsync,
+  extractBearerToken,
+  bearerStorage,
+  type BearerContext,
+} from './bearerPassthrough.js';
 
 import { AuthProvider } from './provider.js';
 import { OAuth2ServiceAccountProvider, OAuth2ServiceAccountConfig } from './oauth2ServiceAccount.js';
 import { AkAsCkSignatureProvider, AkAsCkConfig } from './akAsCkSignature.js';
+import { BearerPassthroughProvider } from './bearerPassthrough.js';
 import { Config, getOAuth2TokenUrl, getApiBaseUrl } from '../../config.js';
 
 /**
@@ -51,6 +60,11 @@ export function createAuthProvider(config: Config): AuthProvider {
     };
 
     return new AkAsCkSignatureProvider(akasckConfig);
+  }
+
+  if (config.authMode === 'bearer') {
+    // Mode passthrough : le bearer token vient de la requête HTTP du client MCP
+    return new BearerPassthroughProvider();
   }
 
   throw new Error(`Mode d'authentification non supporté: ${config.authMode}`);

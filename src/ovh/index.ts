@@ -10,13 +10,17 @@ export {
   AuthError,
   OAuth2ServiceAccountProvider,
   AkAsCkSignatureProvider,
+  BearerPassthroughProvider,
   createAuthProvider,
   requestCredential,
+  withBearerToken,
+  withBearerTokenAsync,
+  extractBearerToken,
+  bearerStorage,
   type OAuth2ServiceAccountConfig,
   type AkAsCkConfig,
   type AccessRule,
   type CredentialRequest,
   type CredentialResponse,
+  type BearerContext,
 } from './auth/index.js';
-
-

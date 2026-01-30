@@ -47,19 +47,6 @@ export function createLogger(level: string = 'info'): pino.Logger {
       level: (label) => ({ level: label }),
     },
     timestamp: pino.stdTimeFunctions.isoTime,
-    // En dev, on peut utiliser pino-pretty pour des logs lisibles
-    // En prod, on garde le JSON pour les outils d'analyse
-    transport:
-      process.env.NODE_ENV === 'development'
-        ? {
-            target: 'pino-pretty',
-            options: {
-              colorize: true,
-              translateTime: 'SYS:standard',
-              ignore: 'pid,hostname',
-            },
-          }
-        : undefined,
   });
 }
 
@@ -76,11 +63,9 @@ export function initLogger(level: string = 'info'): pino.Logger {
 
 /**
  * Retourne l'instance du logger global
- * Lance une erreur si le logger n'a pas été initialisé
  */
 export function getLogger(): pino.Logger {
   if (!loggerInstance) {
-    // Initialiser avec le niveau par défaut si non initialisé
     loggerInstance = createLogger('info');
   }
   return loggerInstance;
